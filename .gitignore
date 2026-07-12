@@ -4,4 +4,3 @@ __pycache__/
 checkpoints/
 *.log
 .ivy2*/
-CONTEXT_FOR_CLAUDE.md

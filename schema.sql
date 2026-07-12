@@ -19,3 +19,21 @@ CREATE TABLE IF NOT EXISTS transactions (
 CREATE INDEX IF NOT EXISTS idx_transactions_user_id ON transactions (user_id);
 CREATE INDEX IF NOT EXISTS idx_transactions_timestamp ON transactions (event_timestamp);
 CREATE INDEX IF NOT EXISTS idx_transactions_is_fraud ON transactions (is_fraud);
+
+-- Rolling-window anomaly flags from spark_fraud_detection.py.
+-- One row per (user_id, window_start, window_end): if the same window gets
+-- recomputed on a later trigger (more data arrived), it's upserted in place
+-- rather than duplicated.
+CREATE TABLE IF NOT EXISTS anomaly_flags (
+    id              SERIAL PRIMARY KEY,
+    user_id         VARCHAR(32) NOT NULL,
+    window_start    TIMESTAMPTZ NOT NULL,
+    window_end      TIMESTAMPTZ NOT NULL,
+    txn_count       INTEGER NOT NULL,
+    total_amount    NUMERIC(12, 2) NOT NULL,
+    detected_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (user_id, window_start, window_end)
+);
+
+CREATE INDEX IF NOT EXISTS idx_anomaly_flags_user_id ON anomaly_flags (user_id);
+CREATE INDEX IF NOT EXISTS idx_anomaly_flags_window_start ON anomaly_flags (window_start);

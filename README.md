@@ -1,8 +1,12 @@
-# Real-Time Financial Fraud Detection — Ingestion Pipeline
+# Real-Time Financial Fraud Detection
 
 ## Phase: Days 1–2 — Real-Time Ingestion
 
 This phase builds the full ingestion backbone of the fraud detection system: a synthetic transaction stream, a Kafka broker to carry it, and a Spark Structured Streaming job that lands parsed, typed data into PostgreSQL. By the end of this phase, transactions flow continuously from generation through to durable, queryable storage.
+
+## Phase: Day 3 — Rolling Anomaly Detection
+
+Building on ingestion, `spark_fraud_detection.py` computes rolling per-user transaction frequency and spend using sliding time windows (2-minute window, 30-second slide), flags users whose activity crosses simple thresholds (`> 5` transactions or `> $1000` spend in-window), and upserts flagged windows into a dedicated `anomaly_flags` table in Postgres.
 
 ---
 
@@ -10,10 +14,46 @@ This phase builds the full ingestion backbone of the fraud detection system: a s
 
 ```
 generate_transactions.py  →  Kafka topic "transactions"  →  Spark Structured Streaming  →  PostgreSQL
-   (synthetic data)             (kafka_producer.py)            (spark_consumer_postgres.py)   (transactions table)
+   (synthetic data)             (kafka_producer.py)         ┬─ spark_consumer_postgres.py  → transactions table
+                                                              └─ spark_fraud_detection.py    → anomaly_flags table
 ```
 
 All infrastructure (Kafka, Postgres, Kafka UI) runs locally via Docker Compose.
+
+---
+
+## How to Run
+
+1. **Start infrastructure** (Kafka, Postgres, Kafka UI):
+   ```
+   docker compose up -d
+   ```
+
+2. **Start the consumer you want** (in its own terminal window):
+   ```
+   run_fraud_detection.bat
+   ```
+   Wait for `[batch 0] total_rows=0 anomalies=0` to appear in the output — that confirms the streaming query is up and stable.
+
+   > **Don't start the producer before you see that line.** The Kafka source uses `startingOffsets: latest`, and that starting offset is locked in at the query's *first internal poll* — a few seconds after `.start()`, not at query-definition time. Data produced before that poll is silently treated as "old" and never processed. Always let batch 0 commit first.
+
+3. **Start the transaction generator** (in a second terminal window):
+   ```
+   run_producer.bat
+   ```
+   Streams synthetic transactions into Kafka continuously.
+
+4. **Check results** — via `psql` in the Postgres container:
+   ```
+   docker exec -it fraud_postgres psql -U fraud_user -d fraud_db -c "SELECT * FROM anomaly_flags ORDER BY detected_at DESC;"
+   ```
+   or browse topics/messages visually at `http://localhost:8080` (Kafka UI).
+
+5. **Stop everything**: Ctrl+C both consumer/producer windows, then `docker compose down` (add `-v` only if you also want to wipe Kafka/Postgres data).
+
+### Troubleshooting
+- **`FileAlreadyExistsException` in the logs, or the consumer sits idle forever with no batches progressing**: check `tasklist | findstr java` — if more than one `java.exe` is running, a stale process from a previous session is fighting the new one over the same checkpoint. Kill the extras, delete the affected `checkpoints/<name>/` directory, and restart.
+- **Every batch takes 60–100+ seconds even with almost no data**: this was Spark's default `spark.sql.shuffle.partitions=200` causing massive per-batch overhead on `local[*]`. Already fixed in `spark_fraud_detection.py` (set to `4`) — if you see this again, check that config wasn't reverted.
 
 ---
 
@@ -56,6 +96,9 @@ Reads continuously from the Kafka topic, parses the JSON payload into a typed Da
 ### 6. Supporting files
 - `spark_consumer.py` — an earlier console-only version of the consumer (Kafka → console), kept as a simpler reference/debugging tool.
 
+### 7. Rolling anomaly detection (`spark_fraud_detection.py`)
+Reads the same Kafka topic independently, applies a watermarked sliding-window aggregation (`groupBy(window(...), user_id)`) to compute per-user transaction count and total spend over a 2-minute window (recomputed every 30 seconds), flags windows crossing simple thresholds, and upserts flagged rows into `anomaly_flags` via `psycopg2` (not plain JDBC, to get `ON CONFLICT` upsert semantics — a window re-emitted on a later trigger with updated counts overwrites its previous row instead of duplicating). Uses Spark's built-in windowed aggregation rather than a hand-rolled stateful operator, so there's no manual state-update logic to maintain.
+
 ---
 
 ## Result
@@ -83,9 +126,12 @@ This pipeline touched a lot of real infrastructure, and almost every layer had a
 6. **Docker Desktop hostname resolution quirk** — the machine's hostname was resolving to `host.docker.internal` / `kubernetes.docker.internal`, breaking Spark's internal driver–executor communication even in local mode. Fixed with explicit `spark.driver.host`/`bindAddress` configs and `SPARK_LOCAL_HOSTNAME`/`SPARK_LOCAL_IP` environment variables forcing `127.0.0.1`.
 7. **Timestamp type mismatch in JDBC write** — the JSON `timestamp` field was written to Postgres as a raw string, which Postgres refused to implicitly cast into its `timestamptz` column. Fixed by explicitly casting to Spark's `TimestampType` (`to_timestamp`) before the JDBC write.
 8. **Spark 4.1.1 internal metrics bug** — a `NullPointerException` inside Spark's own Kafka offset-metrics reporting code intermittently crashed the streaming query even after a successful batch write. Fixed pragmatically with an auto-restart loop around the query, since checkpointing guarantees no data loss or duplication across restarts.
+9. **Two driver processes racing on the same checkpoint** — a stale process left running from an earlier session, plus a freshly launched one, both wrote to `checkpoints/anomaly_flags/`, causing `FileAlreadyExistsException` on state-store checkpoint files and preventing any batch from ever committing. Fixed by always confirming `tasklist | findstr java` shows only one instance before starting, and clearing the checkpoint directory if a corrupted (never-committed) one is found.
+10. **Default `spark.sql.shuffle.partitions=200` made local testing impractically slow** — every windowed-aggregation batch spun up 200 tiny state-store partitions on local disk regardless of data volume, taking 90–180+ seconds per batch even for a handful of test rows. Fixed by setting `spark.sql.shuffle.partitions=4` in the `SparkSession` builder for local runs, dropping batch time to ~7 seconds.
+11. **`startingOffsets: "latest"` race with test data** — the Kafka source's actual starting offset is locked in at the query's *first internal poll*, a few seconds after `.start()`, not at query-definition time. Producing test data immediately after starting the query can land before that poll and get silently treated as pre-existing data, never processed by any batch. Fixed by always waiting for the first batch to commit (visible via a per-batch `total_rows`/`anomalies` debug print added to `write_anomalies_to_postgres`) before producing test transactions.
 
 ---
 
 ## Next Phase
 
-With ingestion fully working, the natural next step is the fraud detection logic itself — either rule-based flagging (velocity checks, amount thresholds) built into the Spark job, or training an actual ML model on the accumulated Postgres data, in line with the project's applied-AI goals.
+With ingestion and rule-based rolling anomaly detection both working end-to-end (verified: a controlled burst of transactions for one test user correctly tripped both thresholds and landed in `anomaly_flags`), the natural next step is training an actual ML model on the accumulated Postgres data — using `is_fraud` as ground truth against real transaction features rather than simple velocity/amount rules — in line with the project's applied-AI goals.

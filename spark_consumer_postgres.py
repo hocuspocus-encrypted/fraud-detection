@@ -83,6 +83,7 @@ def main():
         SparkSession.builder
         .appName("FraudDetectionKafkaToPostgres")
         .master("local[*]")
+        .config("spark.sql.shuffle.partitions", "4")
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")

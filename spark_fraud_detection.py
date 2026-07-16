@@ -44,8 +44,17 @@ SLIDE_DURATION = "30 seconds"
 WATERMARK_DELAY = "2 minutes"  # how late a record can arrive and still count
 
 # Simple anomaly thresholds -- tune these once you see real distributions.
-FREQUENCY_THRESHOLD = 5       # more than 5 transactions in the window
-SPEND_THRESHOLD = 1000.0      # more than $1000 total spend in the window
+#
+# Amounts are lognormvariate(mu=3.5, sigma=1.1) (see generate_transactions.py),
+# so a single transaction has only a ~0.1% chance of exceeding $1000 -- at the
+# default ~2 txn/sec across a 5000-user pool, a 2-minute window essentially
+# never crosses these thresholds (expected ~0.2 flagged windows per window,
+# i.e. almost never). Lowered here to produce a visible, steady trickle of
+# anomalies for demo/dashboard purposes without flagging most traffic:
+# a single transaction has a ~2.5% chance of exceeding $300, and 3+
+# transactions from the same user in one window is a ~0.1% event.
+FREQUENCY_THRESHOLD = 2        # more than 2 transactions in the window
+SPEND_THRESHOLD = 300.0        # more than $300 total spend in the window
 
 transaction_schema = StructType([
     StructField("transaction_id", StringType()),

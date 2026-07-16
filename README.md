@@ -8,14 +8,18 @@ This phase builds the full ingestion backbone of the fraud detection system: a s
 
 Building on ingestion, `spark_fraud_detection.py` computes rolling per-user transaction frequency and spend using sliding time windows (2-minute window, 30-second slide), flags users whose activity crosses simple thresholds (`> 5` transactions or `> $1000` spend in-window), and upserts flagged windows into a dedicated `anomaly_flags` table in Postgres.
 
+## Phase: Day 4 — Live Dashboard
+
+`streamlit_dashboard.py` reads directly from Postgres (both `transactions` and `anomaly_flags`) and auto-refreshes every few seconds, so the pipeline's output is visible as it happens — top-line metrics, transaction volume over time, recent transactions, flagged anomalies, and spend by merchant category.
+
 ---
 
 ## Architecture
 
 ```
 generate_transactions.py  →  Kafka topic "transactions"  →  Spark Structured Streaming  →  PostgreSQL
-   (synthetic data)             (kafka_producer.py)         ┬─ spark_consumer_postgres.py  → transactions table
-                                                              └─ spark_fraud_detection.py    → anomaly_flags table
+   (synthetic data)             (kafka_producer.py)         ┬─ spark_consumer_postgres.py  → transactions table  ─┐
+                                                              └─ spark_fraud_detection.py    → anomaly_flags table ─┴─→ streamlit_dashboard.py
 ```
 
 All infrastructure (Kafka, Postgres, Kafka UI) runs locally via Docker Compose.
@@ -29,27 +33,30 @@ All infrastructure (Kafka, Postgres, Kafka UI) runs locally via Docker Compose.
    docker compose up -d
    ```
 
-2. **Start the consumer you want** (in its own terminal window):
+2. **Start the consumer(s) you want** (each in its own terminal window — both can run at once, against the same Kafka topic, independently):
    ```
-   run_fraud_detection.bat
+   run_consumer_postgres.bat     REM raw transactions → transactions table
+   run_fraud_detection.bat       REM rolling anomaly detection → anomaly_flags table
    ```
-   Wait for `[batch 0] total_rows=0 anomalies=0` to appear in the output — that confirms the streaming query is up and stable.
+   For each, wait for its first-batch line (`[batch 0] wrote 0 rows...` / `[batch 0] total_rows=0 anomalies=0`) before moving on — that confirms the streaming query is up and stable.
 
    > **Don't start the producer before you see that line.** The Kafka source uses `startingOffsets: latest`, and that starting offset is locked in at the query's *first internal poll* — a few seconds after `.start()`, not at query-definition time. Data produced before that poll is silently treated as "old" and never processed. Always let batch 0 commit first.
 
-3. **Start the transaction generator** (in a second terminal window):
+3. **Start the transaction generator** (in its own terminal window):
    ```
    run_producer.bat
    ```
    Streams synthetic transactions into Kafka continuously.
 
-4. **Check results** — via `psql` in the Postgres container:
-   ```
-   docker exec -it fraud_postgres psql -U fraud_user -d fraud_db -c "SELECT * FROM anomaly_flags ORDER BY detected_at DESC;"
-   ```
-   or browse topics/messages visually at `http://localhost:8080` (Kafka UI).
+4. **Check results**:
+   - **Live dashboard**: `run_dashboard.bat`, then open `http://localhost:8501` — auto-refreshes every few seconds with transaction volume, recent transactions, and flagged anomalies straight from Postgres.
+   - **`psql` in the Postgres container**:
+     ```
+     docker exec -it fraud_postgres psql -U fraud_user -d fraud_db -c "SELECT * FROM anomaly_flags ORDER BY detected_at DESC;"
+     ```
+   - Or browse Kafka topics/messages visually at `http://localhost:8080` (Kafka UI).
 
-5. **Stop everything**: Ctrl+C both consumer/producer windows, then `docker compose down` (add `-v` only if you also want to wipe Kafka/Postgres data).
+5. **Stop everything**: Ctrl+C each open window (consumers, producer, dashboard), then `docker compose down` (add `-v` only if you also want to wipe Kafka/Postgres data).
 
 ### Troubleshooting
 - **`FileAlreadyExistsException` in the logs, or the consumer sits idle forever with no batches progressing**: check `tasklist | findstr java` — if more than one `java.exe` is running, a stale process from a previous session is fighting the new one over the same checkpoint. Kill the extras, delete the affected `checkpoints/<name>/` directory, and restart.

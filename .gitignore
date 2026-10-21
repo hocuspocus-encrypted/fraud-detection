@@ -4,3 +4,7 @@ __pycache__/
 checkpoints/
 *.log
 .ivy2*/
+.env
+agent/fraud_demo.db
+agent/results/
+CONTEXT_FOR_CLAUDE_CODE.md

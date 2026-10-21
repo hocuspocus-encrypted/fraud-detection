@@ -17,6 +17,8 @@ import streamlit as st
 from sqlalchemy import create_engine
 from streamlit_autorefresh import st_autorefresh
 
+from evaluation import SETTLE_MINUTES, evaluate
+
 # Matches docker-compose.yml postgres service credentials
 DB_URL = "postgresql+psycopg2://fraud_user:fraud_pass@localhost:5432/fraud_db"
 
@@ -87,6 +89,51 @@ if not volume_df.empty:
     st.altair_chart(chart, use_container_width=True)
 else:
     st.info("No transactions in the last 30 minutes yet. Is the producer running?")
+
+st.divider()
+
+# --- Detector performance vs. synthetic labels --------------------------
+st.subheader("Detector Performance")
+st.caption(
+    "Each transaction counts as predicted fraud if it falls inside a flagged window for its user, "
+    f"scored against the generator's is_fraud label. The last {SETTLE_MINUTES} minutes are excluded "
+    "because their windows haven't closed yet."
+)
+
+EVAL_RANGES = {"Last 30 minutes": 30, "Last hour": 60, "Last 24 hours": 1440, "All time": None}
+eval_range = st.selectbox("Evaluation range", list(EVAL_RANGES), index=1)
+m = evaluate(get_engine(), EVAL_RANGES[eval_range])
+
+if m["total"] == 0:
+    st.info("No settled transactions in this range yet.")
+else:
+    p_col, r_col, f_col, b_col = st.columns(4)
+    p_col.metric("Precision", f"{m['precision']:.3f}")
+    r_col.metric("Recall", f"{m['recall']:.3f}")
+    f_col.metric("F1 Score", f"{m['f1']:.3f}")
+    b_col.metric(
+        "Fraud Rate (precision baseline)",
+        f"{m['fraud_rate']:.3f}",
+        help="Share of transactions that are actually fraud. Flagging at random would score "
+             "about this precision, so the detector is only useful if precision beats it.",
+    )
+
+    cm_col, note_col = st.columns([1, 1])
+    with cm_col:
+        st.dataframe(
+            pd.DataFrame(
+                {"Actual fraud": [m["tp"], m["fn"]], "Actual legit": [m["fp"], m["tn"]]},
+                index=["Flagged", "Not flagged"],
+            ),
+            use_container_width=True,
+        )
+    with note_col:
+        st.markdown(
+            f"**{m['total']:,}** transactions scored · "
+            f"**{m['flag_rate']:.1%}** flagged · accuracy **{m['accuracy']:.3f}**  \n"
+            "Accuracy is mostly the share of legit transactions, so it reads high even for a "
+            "detector that flags nothing. Judge the detector on precision, recall and F1 instead."
+        )
 
 st.divider()
 

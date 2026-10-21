@@ -1,0 +1,137 @@
+[
+  {
+    "case_id": "t4",
+    "account_id": "acc_001",
+    "txn_id": "t4",
+    "category": "clear_fraud",
+    "expected_verdict": "likely_fraud",
+    "acceptable_verdicts": [],
+    "notes": "Far from home city + high-risk merchant + ~2.3x monthly spend in one charge. Multiple independent signals agree."
+  },
+  {
+    "case_id": "t7",
+    "account_id": "acc_002",
+    "txn_id": "t7",
+    "category": "borderline",
+    "expected_verdict": "legitimate",
+    "acceptable_verdicts": ["suspicious"],
+    "notes": "Same city, low-risk merchant the account has used before. Amount is ~3.5x prior txns but well under monthly spend. 45-day-old account is a mild factor, not a deciding one. 'suspicious' is defensible; 'likely_fraud' is not."
+  },
+  {
+    "case_id": "c03_7",
+    "account_id": "acc_003",
+    "txn_id": "c03_7",
+    "category": "velocity_card_testing",
+    "expected_verdict": "likely_fraud",
+    "acceptable_verdicts": [],
+    "notes": "Four $1-$5 charges in ~2 minutes at two high-risk prepaid/gift-card merchants, then a $250 charge. Textbook card testing. Requires the agent to look at the PATTERN, not just the flagged txn."
+  },
+  {
+    "case_id": "c04_4",
+    "account_id": "acc_004",
+    "txn_id": "c04_4",
+    "category": "legit_but_unusual",
+    "expected_verdict": "legitimate",
+    "acceptable_verdicts": ["suspicious"],
+    "notes": "Paris hotel charge ~3 days after a $1150 AirCanada purchase on the same account. Travel is explained by the history. Flagging this as likely_fraud is a false positive that blocks a traveling customer."
+  },
+  {
+    "case_id": "c05_4",
+    "account_id": "acc_005",
+    "txn_id": "c05_4",
+    "category": "impossible_travel",
+    "expected_verdict": "likely_fraud",
+    "acceptable_verdicts": [],
+    "notes": "Toronto Starbucks at 10:00, Singapore Starbucks at 11:30. Merchant is low-risk and amount is tiny, so the ONLY strong signal is physically impossible travel. Tests whether the agent uses the geo tool and trusts it."
+  },
+  {
+    "case_id": "c06_3",
+    "account_id": "acc_006",
+    "txn_id": "c06_3",
+    "category": "new_account_large",
+    "expected_verdict": "suspicious",
+    "acceptable_verdicts": ["likely_fraud"],
+    "notes": "20-day-old account, $1500 (3x monthly spend, ~20x prior txns) at a merchant with no risk data. Not provably fraud, but should not be approved. Hold for review is the right call."
+  },
+  {
+    "case_id": "c07_5",
+    "account_id": "acc_007",
+    "txn_id": "c07_5",
+    "category": "large_but_regular",
+    "expected_verdict": "legitimate",
+    "acceptable_verdicts": [],
+    "notes": "$1250 to the same property manager on the 1st of each month (3 prior months), same city, low-risk merchant. Large absolute amount but perfectly consistent. Strict: anything above 'legitimate' is an over-flag."
+  },
+  {
+    "case_id": "c08_3",
+    "account_id": "acc_008",
+    "txn_id": "c08_3",
+    "category": "small_amount_risky_merchant",
+    "expected_verdict": "suspicious",
+    "acceptable_verdicts": ["likely_fraud"],
+    "notes": "$4.99 at a high-risk gift-card merchant at 4am, online, on an account with only local grocery/fuel history. Low amount but classic probe charge. Amount alone would make this look harmless."
+  },
+  {
+    "case_id": "c09_5",
+    "account_id": "acc_009",
+    "txn_id": "c09_5",
+    "category": "false_positive",
+    "expected_verdict": "legitimate",
+    "acceptable_verdicts": [],
+    "notes": "Routine morning Tim Hortons customer; $38 is a bigger order than usual but nothing else is off. This is a pipeline false positive the agent should clear. Strict."
+  },
+  {
+    "case_id": "c10_6",
+    "account_id": "acc_010",
+    "txn_id": "c10_6",
+    "category": "escalating_amounts",
+    "expected_verdict": "likely_fraud",
+    "acceptable_verdicts": ["suspicious"],
+    "notes": "$50 -> $200 -> $500 -> $1000 -> $2000 at a high-risk crypto merchant over 40 minutes, doubling-ish each time. The flagged $2000 is 2x monthly spend. Escalation is the signal."
+  },
+  {
+    "case_id": "c11_3",
+    "account_id": "acc_011",
+    "txn_id": "c11_3",
+    "category": "legit_geo_tool_noise",
+    "expected_verdict": "legitimate",
+    "acceptable_verdicts": [],
+    "notes": "$60 Amazon order. The geo tool reports 'different city' only because the city field is 'Online'. A careful agent recognizes that is not travel. Strict: this tests whether the agent over-trusts a misleading tool output."
+  },
+  {
+    "case_id": "c12_3",
+    "account_id": "acc_012",
+    "txn_id": "c12_3",
+    "category": "unknown_merchant",
+    "expected_verdict": "legitimate",
+    "acceptable_verdicts": ["suspicious"],
+    "notes": "$450 at a merchant with NO risk data. Same city, amount about half of monthly spend, normal history. 'No data' is not evidence of risk. 'suspicious' is acceptable caution; 'likely_fraud' would be treating absence of data as a red flag."
+  },
+  {
+    "case_id": "c13_5",
+    "account_id": "acc_013",
+    "txn_id": "c13_5",
+    "category": "legit_odd_hours",
+    "expected_verdict": "legitimate",
+    "acceptable_verdicts": [],
+    "notes": "2:40am $18 7-Eleven purchase. Every prior transaction on this account is also ~2:45am at the same store. Time-of-day is only unusual in the abstract; relative to this customer's baseline it is routine. Strict."
+  },
+  {
+    "case_id": "c14_3",
+    "account_id": "acc_014",
+    "txn_id": "c14_3",
+    "category": "new_account_large",
+    "expected_verdict": "suspicious",
+    "acceptable_verdicts": ["likely_fraud"],
+    "notes": "30-day-old account, $2400 at BestBuy (4.8x monthly spend, ~60x prior txns). Same city and low-risk merchant, so a real purchase is plausible. Should be held for review, not auto-approved."
+  },
+  {
+    "case_id": "c15_4",
+    "account_id": "acc_015",
+    "txn_id": "c15_4",
+    "category": "bias_check",
+    "expected_verdict": "legitimate",
+    "acceptable_verdicts": [],
+    "notes": "Lagos-resident account shopping at Shoprite in Lagos. Compare with t4, where Lagos is far from home. If the agent flags this, it is reacting to the city name rather than to the account's own baseline. Strict."
+  }
+]

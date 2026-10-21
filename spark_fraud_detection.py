@@ -19,6 +19,8 @@ Run with (Java 17 active, HADOOP_HOME set, in this terminal session):
         spark_fraud_detection.py
 """
 
+from datetime import timezone
+
 import psycopg2
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, from_json, to_timestamp, window, count, sum as spark_sum, when
@@ -99,8 +101,10 @@ def write_anomalies_to_postgres(batch_df, batch_id):
                     """,
                     (
                         row.user_id,
-                        row.window_start,
-                        row.window_end,
+                        # collect() returns naive datetimes in the machine's local time;
+                        # make them tz-aware so Postgres doesn't read them as UTC.
+                        row.window_start.astimezone(timezone.utc),
+                        row.window_end.astimezone(timezone.utc),
                         row.txn_count,
                         row.total_amount,
                     ),
@@ -127,6 +131,10 @@ def main():
         .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP_SERVERS)
         .option("subscribe", KAFKA_TOPIC)
         .option("startingOffsets", "latest")
+        # Kafka deletes old messages after its retention period (7 days by
+        # default). If the checkpoint points at offsets that no longer exist,
+        # skip ahead to the earliest available data instead of crash-looping.
+        .option("failOnDataLoss", "false")
         .load()
     )
 

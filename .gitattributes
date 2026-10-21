@@ -1,0 +1,3 @@
+# LF for files that run inside containers or psql (PLAN.md ground rule 3)
+*.sql text eol=lf
+*.sh  text eol=lf

@@ -225,3 +225,13 @@ D on seeds 7 and 123: 60 and 75 incidents/h, 23% and 33% precision. The producer
 **Limitation of the rules, not the generator:** the Spark rules catch impossible travel only by accident (0-3 of 4-9 patterns per simulated hour). Two ordinary-sized purchases in different countries trip neither rule, so the agent never sees most impossible-travel fraud.
 
 **Reset for the new defaults.** All 936 queued incidents were deleted: 758 from the old random `user_` data, and 178 from the first 30-minute run. The first run's `cust_` data (3,600 transactions, 584 flags, 332 labels) was deleted too, since it was generated with the old amounts and activity. `ENQUEUE_SINCE` moved to 2026-10-21T09:56:18Z. Reference data was re-seeded for 5000 customers. The 42,771 older `user_` transactions are kept as history.
+
+## 11. Risk signals and the baseline second opinion (PLAN_HITL H1, 2026-11-11)
+
+Migration `0010_risk_signals` adds `rule_hits`, `signals` and `baseline_score` / `baseline_verdict` / `baseline_action` to `investigations`. Nothing in Spark changed.
+
+- **`compute_incident_signals(id)`** (SQL, worker role only) runs right after a claim. `rule_hits` mirrors the two Spark thresholds (`velocity_gt_2_in_2min`, `spend_gt_300_in_2min`) from the incident's `anomaly_flags`. `signals` holds the largest window, the primary amount, amount vs. average monthly spend, whether the primary city is home, whether the merchant is new for the account, the merchant's risk level (`unknown` if not listed) and account age at the incident's end. Unknown values are null. It is write-once: a retry or re-run keeps the first values.
+- **The baseline is a rule scorer, not an ML model.** `agent/adapters/baseline_adapter.py` is a dozen hand-written rules over the same four read-only tools. The worker runs it before the agent on every incident (milliseconds, no LLM) and stores its result, including on failed rows. H3 compares it with the agent.
+- **`rule_hits` reach the agent only under prompt `v4`**, which is in progress and not the default. `v2`, the measured configuration, sees the same context as before.
+- Incidents finished before 0010 have no signals or baseline; H3's `route_existing.py` backfills them.
+- The incident eval inserts its incidents without anomaly flags, so `rule_hits` is empty there. To measure `v4` in H2, the eval has to insert the simulated flag windows first. Its history starts after a 2-hour warm-up, so `new_merchant_for_account` is nearly always true in the eval.

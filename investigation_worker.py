@@ -156,7 +156,8 @@ def verdict_from_score(v: dict) -> tuple[dict, dict]:
 
 class Worker:
     def __init__(self, config: WorkerConfig, dbname: str | None = None,
-                 investigate=None, provider: str | None = None, model: str | None = None):
+                 investigate=None, provider: str | None = None, model: str | None = None,
+                 baseline=None):
         if config.stuck_after_seconds <= config.timeout_seconds:
             raise ValueError("stuck_after_seconds must exceed timeout_seconds, "
                              "or live investigations would be reclaimed as stuck")
@@ -166,7 +167,13 @@ class Worker:
             import orchestrator
             investigate = orchestrator.run_investigation
             provider, model = orchestrator.current_model()
+            if baseline is None:
+                from adapters import baseline_adapter
+                baseline = baseline_adapter.run_investigation
         self.investigate = investigate
+        # Rule scorer run on the same incident before the agent, as a second opinion
+        # (docs/PLAN_HITL.md H1). None skips it; tests that inject investigate pass their own.
+        self.baseline = baseline
         self.provider, self.model = provider, model
         self.prompt_version = prompt_version()
         self._conn = None
@@ -255,6 +262,10 @@ class Worker:
         conn = connect("worker", self.dbname)
         try:
             with conn, conn.cursor() as cur:
+                # Write-once, so a retried attempt sees the same signals as the first.
+                cur.execute("SELECT compute_incident_signals(%s)", (row["id"],))
+                cur.execute("SELECT rule_hits FROM investigations WHERE id = %s", (row["id"],))
+                rule_hits = cur.fetchone()[0] or []
                 cur.execute("SELECT merchant, amount FROM transactions WHERE transaction_id = %s",
                             (row["primary_txn_id"],))
                 found = cur.fetchone()
@@ -273,7 +284,15 @@ class Worker:
             f"{row['incident_end']:%Y-%m-%d %H:%M:%S} UTC: "
             f"{n} transaction{'' if n == 1 else 's'} totaling ${float(total):.2f}."
         )
+        if self.prompt_version == "v4":
+            context += f" Rules that fired: {', '.join(rule_hits) if rule_hits else 'none recorded'}."
         return merchant, float(amount), context
+
+    def _run_baseline(self, row: dict, merchant: str, amount: float) -> dict | None:
+        if self.baseline is None:
+            return None
+        return (self.baseline(row["user_id"], row["primary_txn_id"], merchant, amount, verbose=False)
+                .get("verdict"))
 
     def _run_with_timeout(self, row: dict, merchant: str, amount: float, context: str) -> dict:
         box = {}
@@ -298,8 +317,10 @@ class Worker:
     def process(self, row: dict) -> None:
         ids = {"investigation_id": row["id"], "primary_txn_id": row["primary_txn_id"], "attempt": row["attempts"]}
         started = time.monotonic()
+        baseline = None
         try:
             merchant, amount, context = self._incident_details(row)
+            baseline = self._run_baseline(row, merchant, amount)
             result = self._run_with_timeout(row, merchant, amount, context)
             usage = result.get("usage")
             verdict = result.get("verdict") or {}
@@ -312,28 +333,33 @@ class Worker:
             trace = result.get("trace")
             if valid_verdict(verdict, self.prompt_version):
                 verdict, entry = verdict_from_score(verdict)
-                self._finish(row, "done", "done", verdict=verdict, trace=(trace or []) + [entry], usage=usage)
+                self._finish(row, "done", "done", verdict=verdict, trace=(trace or []) + [entry], usage=usage,
+                             baseline=baseline)
             elif verdict.get("error"):
-                self._finish(row, "failed", "failed", error=str(verdict["error"]), trace=trace, usage=usage)
+                self._finish(row, "failed", "failed", error=str(verdict["error"]), trace=trace, usage=usage,
+                             baseline=baseline)
             else:
                 raw = verdict.get("raw_output", verdict)
                 self._finish(row, "failed", "failed", error="unparseable output after one retry",
-                             trace=(trace or []) + [{"type": "unparseable_output", "content": raw}], usage=usage)
+                             trace=(trace or []) + [{"type": "unparseable_output", "content": raw}], usage=usage,
+                             baseline=baseline)
         except Exception as e:
             message = f"{type(e).__name__}: {e}"[:MAX_ERROR_CHARS]
             if is_transient(e):
                 outcome = "timeout" if isinstance(e, InvestigationTimeout) else "transient_error"
                 self._retry_or_dead(row, outcome, message)
             else:
-                self._finish(row, "failed", "failed", error=message)
+                self._finish(row, "failed", "failed", error=message, baseline=baseline)
         finally:
             log_event("attempt_finished", seconds=round(time.monotonic() - started, 2), **ids)
 
     # ---------- writes (fenced on attempt number) ----------
 
     def _finish(self, row: dict, status: str, outcome: str, verdict: dict | None = None,
-                trace=None, error: str | None = None, usage: dict | None = None) -> None:
+                trace=None, error: str | None = None, usage: dict | None = None,
+                baseline: dict | None = None) -> None:
         v = verdict or {}
+        b = baseline or {}
         conn = connect("worker", self.dbname)
         try:
             with conn, conn.cursor() as cur:
@@ -341,7 +367,8 @@ class Worker:
                     """UPDATE investigations
                        SET status = %s, finished_at = now(), provider = %s, model = %s, prompt_version = %s,
                            risk_score = %s, verdict = %s, recommended_action = %s, explanation = %s,
-                           evidence = %s, trace = %s, error = %s, usage = %s
+                           evidence = %s, trace = %s, error = %s, usage = %s,
+                           baseline_score = %s, baseline_verdict = %s, baseline_action = %s
                        WHERE id = %s AND status = 'running' AND attempts = %s""",
                     (status, self.provider, self.model, self.prompt_version,
                      v.get("risk_score"), str(v["verdict"]).strip().lower() if v else None,
@@ -349,6 +376,7 @@ class Worker:
                      Json(v.get("evidence_cited")) if v else None,
                      Json(trace) if trace is not None else None, error,
                      Json(usage) if usage else None,
+                     b.get("risk_score"), b.get("verdict"), b.get("recommended_action"),
                      row["id"], row["attempts"]),
                 )
                 if cur.rowcount == 0:

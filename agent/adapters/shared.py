@@ -63,7 +63,9 @@ Respond with ONLY a JSON object (no other text, no markdown fences) in exactly t
 #       without context is unchanged from v1)
 #   v3  the four checks are run before the model is called and their results are put
 #       in the task (gather_evidence); risk_score bands decide the verdict
-PROMPT_VERSIONS = ("v2", "v3")
+#   v4  in progress (docs/PLAN_HITL.md H1-H2): v2 plus the rules that fired in the incident
+#       context (the worker adds them). Not the default until H2 measures it.
+PROMPT_VERSIONS = ("v2", "v3", "v4")
 PROMPT_VERSION = "v2"  # default; AGENT_PROMPT_VERSION overrides it
 
 def verdict_for_score(score: float) -> str:

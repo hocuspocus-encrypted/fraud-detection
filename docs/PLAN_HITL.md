@@ -4,7 +4,7 @@
 
 **Written:** 2026-11-11, from a read of commit `742e83a` ("Phase 1-4 completed"). Phases 0-4 of `PLAN.md` are built. Without Postgres, 23 tests pass; the 2 that need a database were not run.
 
-**Corrected 2026-11-11 against commit `fb92d65`.** `PLAN.md` Phase 5 is also done (`docs/METRICS.md`). The agent now runs on `qwen3:4b-instruct`, and the worker stores the verdict and action from the band of the model's `risk_score`, keeping the model's own label in the trace (`verdict_from_score` in `investigation_worker.py`). `v3` already names a prefetch prompt that was tried and rejected, so this plan's new prompt contract is `v4`. The phases below are otherwise as written.
+**Corrected 2026-11-11 against commit `fb92d65`.** `PLAN.md` Phase 5 is also done (`docs/METRICS.md`). The agent now runs on `qwen3:4b-instruct`, and the worker stores the verdict and action from the band of the model's `risk_score`, keeping the model's own label in the trace (`verdict_from_score` in `investigation_worker.py`). `v3` already names a prefetch prompt that was tried and rejected, so this plan's new prompt contract is `v4`: H1 adds the rule hits to its context and H2 completes it; `v2` stays the default until H2 measures `v4`. The phases below are otherwise as written.
 
 ---
 

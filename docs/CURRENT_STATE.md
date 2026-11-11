@@ -240,7 +240,7 @@ Migration `0010_risk_signals` adds `rule_hits`, `signals` and `baseline_score` /
 
 Migration `0011_verdict_v4` adds `confidence` and `grounding_ok` to `investigations`.
 
-- **Prompt `v4`** is `v2` plus three things: the rules that fired in the context (from H1), a `confidence` field (`low`/`medium`/`high`), and `evidence_cited` items as `{"claim", "tool"}`. `v2` is still the default until the two are measured.
+- **Prompt `v4`** is `v2` plus three things: the rules that fired in the context (from H1), a `confidence` field (`low`/`medium`/`high`), and `evidence_cited` items as `{"claim", "tool"}`. Measured 2026-11-11 (docs/METRICS.md): it catches more fraud but clears fewer legitimate incidents than `v2`, so `v2` stays the default.
 - **`confidence`** is stored as given, or `low` when the model gave none or an unknown value. That includes every `v2` row, since `v2` never asks for it, so under `v2` H3's `low_confidence` trigger would fire on every case.
 - **`grounding_ok`** (`shared.grounding_ok`): under `v4`, true when `evidence_cited` is a non-empty list and every item names a tool that was called in the trace without an error. A claim with no tool, a tool that was never called, or a call that returned an error makes it false. It is NULL for older prompts, whose evidence names no tools. It never fails an investigation.
 - Old rows keep their plain-string evidence; `shared.evidence_items()` reads both forms as `{"claim", "tool"}` with `tool` null for strings.

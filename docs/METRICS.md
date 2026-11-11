@@ -122,31 +122,49 @@ Test split, run once with the chosen configuration (v2, label from score), 171 c
 
 Good customers blocked splits as 11% of ordinary incidents and 22% of legitimate oddities (travel, big purchases, new merchants). That comes from the model's scores, not the bands. Synthetic data; one test run.
 
-## After Phase 5: incident eval and the score-derived verdict (2026-10-29)
+## HITL H2: prompt v2 vs v4 (2026-11-11)
 
-The live verdicts above came from `qwen3:8b` and no longer describe the agent. Since then:
+Prompt `v4` is `v2` plus the rules that fired in the incident context, a `confidence` field, and each `evidence_cited` item naming the tool it came from (docs/CURRENT_STATE.md section 12). Both prompts were run on the same day with the same code, on `qwen3:4b-instruct` with the label taken from the score, as the worker stores it. Since H2, the incident eval inserts each incident's flag windows, so `rule_hits` is filled (v4 sees them; v2 doesn't). The prompt was not tuned after these runs.
 
-- **Incident eval** (`agent/incident_eval.py`): labelled incidents built from the generator (dev: stream seed 1001, 99 cases; test: stream seed 2002, 171 cases), each run through the real worker with history only up to the incident end + 5 minutes. Fraud should be `likely_fraud` (`suspicious` is lenient); a legitimate oddity or an ordinary incident should be `legitimate` (`suspicious` is lenient for oddities).
-- **Model: `qwen3:4b-instruct`.** `qwen3:8b` ran a third on the CPU and ran this 15 GB laptop out of RAM. The real cause turned out to be Ollama's llama-server prompt cache (8 GB limit, not configurable); the adapter now unloads the model every 8 requests (`OLLAMA_RECYCLE_AFTER_REQUESTS`).
-- **Prompt v3** (all four checks prefetched, label must match the score band) was tried and rejected.
-- **The verdict now follows the score.** The worker stores the band of the model's `risk_score` (0-30 legitimate, 31-70 suspicious, 71-100 likely_fraud) as the verdict and action, and keeps the model's own label in the trace (`verdict_from_score`). The bands were fixed before the dev runs and not tuned.
+**Incident eval, dev split, 3 runs x 99 cases:**
 
-Dev split, 3 runs x 99 cases, `qwen3:4b-instruct`:
-
-| | v2, model's label | v3, model's label | v2, label from score |
+| | v2 (2026-10-29) | v2 (today) | v4 (today) |
 |---|---|---|---|
-| Fraud not cleared | 100% | 100% | 98% |
-| Fraud labelled likely_fraud | 90% | 98% | 96% |
-| Legitimate cleared | 7% | 22% | 78% |
-| Good customers blocked | 1% | 21% | 14% |
-| Strict / lenient | 30% / 80% | 43% / 77% | 83% / 87% |
-| Verdict flips between runs | 7% | 13% | |
-| Seconds per case | 11.0 | 8.3 | 11.0 |
+| Fraud not cleared | 98% | 98% | **100%** |
+| Fraud labelled likely_fraud | 96% | 96% | **100%** |
+| Legitimate cleared | 78% | **77%** | 69% |
+| Good customers blocked | 14% | **12%** | 17% |
+| Strict / lenient | 83% / 87% | **82% / 89%** | 78% / 88% |
+| Verdict flips between runs | | **7%** | 10% |
+| Seconds per case | 11.0 | 11.7 | 12.0 |
+| All four checks run | 100% | 99% | 93% |
+| Evidence grounded in the trace | | not checked | 99% (2 of 297 not) |
+| Confidence given | | none (stored as low) | high 290, medium 7, low 0 |
 
-Test split, run once with the chosen configuration (v2, label from score), 171 cases:
+Today's v2 run reproduces the 2026-10-29 one within a point or two, so the comparison isn't skewed by drift since then.
 
-| Fraud not cleared | Fraud likely_fraud | Legitimate cleared | Good customers blocked | Strict / lenient |
-|---|---|---|---|---|
-| 100% (59/59) | 95% | 72% | 18% | 80% / 88% |
+By category, all 3 runs together (legitimate / suspicious / likely_fraud):
 
-Good customers blocked splits as 11% of ordinary incidents and 22% of legitimate oddities (travel, big purchases, new merchants). That comes from the model's scores, not the bands. Synthetic data; one test run.
+| | v2 | v4 |
+|---|---|---|
+| Fraud (84) | 2 / 1 / 81 | 0 / 0 / 84 |
+| Legitimate oddity (150) | 109 / 18 / 23 | 97 / 28 / 25 |
+| Ordinary (63) | 54 / 6 / 3 | 51 / 0 / 12 |
+
+**15-case eval (`agent/eval.py`):**
+
+| | baseline (rules) | v2 | v4 |
+|---|---|---|---|
+| Strict / lenient, model's label | 93% / 93% | 67% / 87% | 67% / 93% |
+| Strict / lenient, label from score | 93% / 93% | 67% / 93% | 67% / 93% |
+| Evidence grounded | | not checked | 15/15 |
+| Confidence given | | | high 14, medium 1 |
+
+The 15 seeded cases have no incident context, so here v4 differs from v2 only in the output format.
+
+**Reading it:**
+
+- **v4 is worse on the legitimate side.** It catches all fraud, against 98%, but clears 69% of legitimate incidents against 77% and blocks 17% of good customers against 12%. Strict accuracy drops 4 points and flips rise from 7% to 10%. Most of the extra blocks are ordinary incidents (12 of 189 against 3), which looks like seeing the rule names pushing scores up. That's a guess from the counts; the traces haven't been checked.
+- **Confidence carries almost no signal on this model.** It said `high` on 98% of verdicts, including 63 of the 65 it got wrong. H3's `low_confidence` trigger would almost never fire under v4, and under v2 every row is stored as `low`, so it would fire on every case.
+- **The grounding check works but rarely fires.** Of the 2 flagged verdicts, one cited `context_from_detection_pipeline` as if it were a tool, and the other cited a `get_geo_consistency` call that had returned an error (wrong transaction id).
+- v2 stays the default. The choice for H3 is between v4's grounding and confidence fields, and v2's better clearing of legitimate customers.

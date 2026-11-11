@@ -22,6 +22,8 @@ incident as context, then write the result.
     attempts started per rolling hour, across restarts.
   - Kill switch: WORKER_ENABLED=false stops new claims (in-flight ones finish).
     It is re-read from .env every loop, so it takes effect without a restart.
+  - Every row that ends done, failed or dead is routed (routing.py, PLAN_HITL H3) in
+    the same transaction that writes its result.
 
 Usage (from the repo root):
     venv\\Scripts\\python.exe investigation_worker.py               (run forever)
@@ -45,6 +47,7 @@ from dotenv import dotenv_values
 from psycopg2.extras import Json
 
 from db import ROOT, connect
+from routing import RoutingConfig, route
 
 sys.path.insert(0, str(ROOT / "agent"))
 from adapters.shared import ACTION_FOR, CONFIDENCE, grounding_ok, prompt_version, verdict_for_score  # noqa: E402
@@ -162,10 +165,38 @@ def verdict_from_score(v: dict) -> tuple[dict, dict]:
     return dict(v, verdict=verdict, recommended_action=ACTION_FOR[verdict]), entry
 
 
+def write_route(cur, investigation_id: int, config: RoutingConfig) -> str | None:
+    """Route a finished row and store the result, inside the caller's transaction. A row
+    that is already routed (or reviewed) is left alone. Returns the review_status written."""
+    cur.execute(
+        """SELECT status, prompt_version, risk_score, verdict, recommended_action, confidence,
+                  grounding_ok, signals, baseline_score, baseline_verdict
+           FROM investigations WHERE id = %s AND review_status IS NULL""",
+        (investigation_id,),
+    )
+    row = cur.fetchone()
+    if row is None:
+        return None
+    status, version, score, verdict, action, confidence, grounded, signals, b_score, b_verdict = row
+    v = None
+    if verdict is not None:
+        v = {"risk_score": float(score), "verdict": verdict, "recommended_action": action,
+             "confidence": confidence}
+    b = None if b_verdict is None else {"risk_score": float(b_score), "verdict": b_verdict}
+    r = route(investigation_id, v, signals, b, grounded, status, version, config)
+    cur.execute(
+        """UPDATE investigations SET review_status = %s, review_reasons = %s, review_priority = %s,
+                                   qa_sample = %s
+           WHERE id = %s AND review_status IS NULL""",
+        (r.review_status, list(r.reasons), r.priority, r.qa_sample, investigation_id),
+    )
+    return r.review_status
+
+
 class Worker:
     def __init__(self, config: WorkerConfig, dbname: str | None = None,
                  investigate=None, provider: str | None = None, model: str | None = None,
-                 baseline=None):
+                 baseline=None, routing: RoutingConfig | None = None):
         if config.stuck_after_seconds <= config.timeout_seconds:
             raise ValueError("stuck_after_seconds must exceed timeout_seconds, "
                              "or live investigations would be reclaimed as stuck")
@@ -183,6 +214,7 @@ class Worker:
         # (docs/PLAN_HITL.md H1). None skips it; tests that inject investigate pass their own.
         self.baseline = baseline
         self.provider, self.model = provider, model
+        self.routing = routing or RoutingConfig.from_env()
         self.prompt_version = prompt_version()
         self._conn = None
         self._budget_exhausted = False
@@ -222,6 +254,7 @@ class Worker:
                 (stuck, self.cfg.max_attempts),
             )
             for iid, txn in cur.fetchall():
+                write_route(cur, iid, self.routing)
                 log_event("dead", investigation_id=iid, primary_txn_id=txn, reason="stuck")
 
             cur.execute("SELECT count(*) FROM investigation_attempts WHERE started_at > now() - interval '1 hour'")
@@ -399,10 +432,11 @@ class Worker:
                        WHERE investigation_id = %s AND attempt = %s""",
                     (outcome, error, row["id"], row["attempts"]),
                 )
+                review_status = write_route(cur, row["id"], self.routing)
         finally:
             conn.close()
         log_event(status, investigation_id=row["id"], primary_txn_id=row["primary_txn_id"],
-                  attempt=row["attempts"], verdict=v.get("verdict"), error=error)
+                  attempt=row["attempts"], verdict=v.get("verdict"), review_status=review_status, error=error)
 
     def _retry_or_dead(self, row: dict, outcome: str, error: str) -> None:
         dead = row["attempts"] >= self.cfg.max_attempts
@@ -429,6 +463,8 @@ class Worker:
                        WHERE investigation_id = %s AND attempt = %s""",
                     (outcome, error, row["id"], row["attempts"]),
                 )
+                if dead:
+                    write_route(cur, row["id"], self.routing)
         finally:
             conn.close()
         log_event("dead" if dead else "retry_scheduled", investigation_id=row["id"],

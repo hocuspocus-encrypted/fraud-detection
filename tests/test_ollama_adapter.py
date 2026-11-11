@@ -43,13 +43,14 @@ def fake_ollama(monkeypatch):
     state = {"responses": [], "requests": []}
 
     def handler(request: httpx.Request):
-        assert request.url.path == "/api/chat"
-        state["requests"].append(json.loads(request.content))
+        assert request.url.path in ("/api/chat", "/api/generate")
+        state["requests"].append({**json.loads(request.content), "_path": request.url.path})
         status, body = state["responses"].pop(0)
         return httpx.Response(status, json=body)
 
     monkeypatch.setattr(ollama_adapter, "_make_client",
                         lambda: httpx.Client(base_url="http://ollama.test", transport=httpx.MockTransport(handler)))
+    monkeypatch.setenv("OLLAMA_RECYCLE_AFTER_REQUESTS", "0")  # off unless a test turns it on
     calls = []
     monkeypatch.setattr(ollama_adapter, "TOOL_FUNCTIONS", {
         "get_account_history": lambda account_id: calls.append(("history", account_id)) or
@@ -164,6 +165,46 @@ def test_ollama_not_running_is_transient(monkeypatch):
     with pytest.raises(httpx.ConnectError) as exc:
         run()
     assert is_transient(exc.value)
+
+
+def test_prefetched_evidence_is_sent_and_traced(fake_ollama, monkeypatch):
+    """Prompt v3: the four checks arrive in the task and lead the trace; the v3 system prompt is used."""
+    from adapters import shared
+    monkeypatch.setenv("AGENT_PROMPT_VERSION", "v3")
+    evidence = [{"step": -1, "type": "tool_call", "tool": "check_merchant_risk", "input": {"merchant": "M"},
+                 "output": {"merchant": "M", "risk_level": "high"}, "prefetched": True}]
+    fake_ollama["responses"] = [(200, chat_response(content=json.dumps(FINAL)))]
+    result = run(evidence=evidence)
+
+    system, user = fake_ollama["requests"][0]["messages"][:2]
+    assert system["content"] == shared.SYSTEM_PROMPT_V3
+    assert '{"merchant": "M", "risk_level": "high"}' in user["content"]
+    assert result["trace"][0] == evidence[0]
+    assert result["usage"]["turns"] == 1
+
+
+def test_model_is_recycled_to_empty_the_prompt_cache(fake_ollama, monkeypatch):
+    """Ollama's llama-server keeps a prompt cache in system RAM (up to 8 GB, not configurable
+    through Ollama). After every N chat requests the adapter unloads the model at the end of
+    an investigation, which empties the cache."""
+    monkeypatch.setenv("OLLAMA_RECYCLE_AFTER_REQUESTS", "3")
+    monkeypatch.setattr(ollama_adapter, "_requests_since_recycle", 0)
+    final = (200, chat_response(content=json.dumps(FINAL)))
+    loop = (200, chat_response(tool_calls=[tool_call("get_account_history", {"account_id": "acc_001"})]))
+    unload = (200, {"model": "x", "done_reason": "unload"})
+
+    fake_ollama["responses"] = [loop, final]               # 2 requests: below the limit, no unload
+    run()
+    fake_ollama["responses"] = [loop, final, unload]       # 4 total: unload once this investigation ends
+    run()
+    fake_ollama["responses"] = [final]                     # counter was reset by the unload
+    run()
+
+    paths = [r.get("_path") for r in fake_ollama["requests"]]
+    assert paths.count("/api/generate") == 1
+    unload_req = next(r for r in fake_ollama["requests"] if r.get("_path") == "/api/generate")
+    assert unload_req["keep_alive"] == 0 and unload_req["model"] == ollama_adapter.MODEL
+    assert paths.index("/api/generate") == 4               # after the 4th chat request, not mid-conversation
 
 
 def test_orchestrator_knows_ollama(monkeypatch):

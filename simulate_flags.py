@@ -30,16 +30,20 @@ WINDOW_SECONDS, SLIDE_SECONDS = 120, 30
 PROFILE_PARAMS = ("SPEND_MU_MEAN", "SPEND_MU_SD", "SPEND_SIGMA_RANGE", "ACTIVITY_SIGMA")
 
 
-def simulate(seed: int = gt.DEFAULT_SEED, n_users: int = gt.DEFAULT_USERS, interval: float = 0.5,
-             hours: float = 1.0, **profile_params) -> dict:
+SIM_START = datetime(2026, 10, 21, 0, 0, tzinfo=timezone.utc)
+
+
+def generate_stream(seed: int = gt.DEFAULT_SEED, n_users: int = gt.DEFAULT_USERS, interval: float = 0.5,
+                    hours: float = 1.0, stream_seed: int | None = None, start: datetime = SIM_START,
+                    **profile_params) -> tuple:
+    """Step a generator on a fake clock, like the producer does. Returns (generator, [(record, label)])."""
     saved = {k: getattr(gt, k) for k in profile_params}
     for k, v in profile_params.items():
         assert k in PROFILE_PARAMS, k
         setattr(gt, k, v)
     try:
-        start = datetime(2026, 10, 21, 0, 0, tzinfo=timezone.utc)
         now = [start]
-        gen = gt.TransactionGenerator(seed=seed, n_users=n_users, clock=lambda: now[0])
+        gen = gt.TransactionGenerator(seed=seed, n_users=n_users, clock=lambda: now[0], stream_seed=stream_seed)
         events = []
         for _ in range(int(hours * 3600 / interval)):
             events.extend(gen.step())
@@ -47,12 +51,14 @@ def simulate(seed: int = gt.DEFAULT_SEED, n_users: int = gt.DEFAULT_USERS, inter
     finally:
         for k, v in saved.items():
             setattr(gt, k, v)
+    return gen, events
 
+
+def find_incidents(events) -> list[tuple]:
+    """(user_id, start_epoch, end_epoch) per incident, as Spark + enqueue_incidents() would form them."""
     windows = defaultdict(lambda: [0, 0.0])
-    by_user = defaultdict(list)
-    for record, label in events:
+    for record, _ in events:
         t = datetime.fromisoformat(record["timestamp"]).timestamp()
-        by_user[record["user_id"]].append((t, record, label))
         first = int(t // SLIDE_SECONDS) * SLIDE_SECONDS
         for k in range(WINDOW_SECONDS // SLIDE_SECONDS):
             w = windows[(record["user_id"], first - k * SLIDE_SECONDS)]
@@ -64,7 +70,7 @@ def simulate(seed: int = gt.DEFAULT_SEED, n_users: int = gt.DEFAULT_USERS, inter
         if count > FREQUENCY_THRESHOLD or total > SPEND_THRESHOLD:
             flagged[user].append(s)
 
-    incidents = []  # (user, start, end)
+    incidents = []
     for user, starts in flagged.items():
         starts.sort()
         cur_start, cur_end = starts[0], starts[0] + WINDOW_SECONDS
@@ -74,6 +80,16 @@ def simulate(seed: int = gt.DEFAULT_SEED, n_users: int = gt.DEFAULT_USERS, inter
                 cur_start = s
             cur_end = max(cur_end, s + WINDOW_SECONDS)
         incidents.append((user, cur_start, cur_end))
+    return sorted(incidents, key=lambda i: (i[2], i[0]))
+
+
+def simulate(seed: int = gt.DEFAULT_SEED, n_users: int = gt.DEFAULT_USERS, interval: float = 0.5,
+             hours: float = 1.0, **profile_params) -> dict:
+    _, events = generate_stream(seed, n_users, interval, hours, **profile_params)
+    by_user = defaultdict(list)
+    for record, label in events:
+        by_user[record["user_id"]].append((datetime.fromisoformat(record["timestamp"]).timestamp(), record, label))
+    incidents = find_incidents(events)
 
     kinds = defaultdict(int)
     detected_patterns = set()

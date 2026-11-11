@@ -47,7 +47,7 @@ from psycopg2.extras import Json
 from db import ROOT, connect
 
 sys.path.insert(0, str(ROOT / "agent"))
-from adapters.shared import PROMPT_VERSION  # noqa: E402
+from adapters.shared import ACTION_FOR, prompt_version, verdict_for_score  # noqa: E402
 
 VERDICTS = {"legitimate", "suspicious", "likely_fraud"}
 ACTIONS = {"approve", "hold_for_review", "block_and_notify_customer"}
@@ -124,15 +124,34 @@ def is_transient(exc: BaseException) -> bool:
     return "Timeout" in name or "Connection" in name or "RateLimit" in name
 
 
-def valid_verdict(v) -> bool:
+def valid_verdict(v, prompt_version: str = "v2") -> bool:
+    """Well-formed verdict. Under prompt v3 the label must also match the band of its own
+    risk_score and the action must match the label; a contradiction counts as unparseable."""
     if not isinstance(v, dict):
         return False
     score = v.get("risk_score")
-    return (
-        str(v.get("verdict", "")).strip().lower() in VERDICTS
+    verdict = str(v.get("verdict", "")).strip().lower()
+    ok = (
+        verdict in VERDICTS
         and v.get("recommended_action") in ACTIONS
         and isinstance(score, (int, float)) and not isinstance(score, bool) and 0 <= score <= 100
     )
+    if ok and prompt_version == "v3":
+        ok = verdict == verdict_for_score(score) and v["recommended_action"] == ACTION_FOR[verdict]
+    return ok
+
+
+def verdict_from_score(v: dict) -> tuple[dict, dict]:
+    """Deterministic code decides, the model interprets: the stored verdict and action are
+    the band of the model's risk_score (0-30 legitimate, 31-70 suspicious, 71-100
+    likely_fraud). On the dev split qwen3:4b-instruct's scores separated the classes well
+    but it labelled 92% of non-fraud 'suspicious'. Returns the verdict to store and a trace
+    entry that keeps the model's own label for audit."""
+    verdict = verdict_for_score(v["risk_score"])
+    entry = {"type": "verdict_from_score", "risk_score": v["risk_score"],
+             "model_verdict": str(v["verdict"]).strip().lower(), "model_action": v["recommended_action"],
+             "verdict": verdict, "recommended_action": ACTION_FOR[verdict]}
+    return dict(v, verdict=verdict, recommended_action=ACTION_FOR[verdict]), entry
 
 
 class Worker:
@@ -149,7 +168,7 @@ class Worker:
             provider, model = orchestrator.current_model()
         self.investigate = investigate
         self.provider, self.model = provider, model
-        self.prompt_version = PROMPT_VERSION
+        self.prompt_version = prompt_version()
         self._conn = None
         self._budget_exhausted = False
 
@@ -284,15 +303,16 @@ class Worker:
             result = self._run_with_timeout(row, merchant, amount, context)
             usage = result.get("usage")
             verdict = result.get("verdict") or {}
-            if not valid_verdict(verdict) and not verdict.get("error"):
+            if not valid_verdict(verdict, self.prompt_version) and not verdict.get("error"):
                 log_event("unparseable_retry", **ids)
                 result = self._run_with_timeout(row, merchant, amount, context)
                 usage = sum_usage(usage, result.get("usage"))
                 verdict = result.get("verdict") or {}
 
             trace = result.get("trace")
-            if valid_verdict(verdict):
-                self._finish(row, "done", "done", verdict=verdict, trace=trace, usage=usage)
+            if valid_verdict(verdict, self.prompt_version):
+                verdict, entry = verdict_from_score(verdict)
+                self._finish(row, "done", "done", verdict=verdict, trace=(trace or []) + [entry], usage=usage)
             elif verdict.get("error"):
                 self._finish(row, "failed", "failed", error=str(verdict["error"]), trace=trace, usage=usage)
             else:

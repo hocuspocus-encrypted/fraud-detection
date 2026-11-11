@@ -2,7 +2,7 @@
 
 **Audience:** Claude Code, working inside the fraud-detection-pipeline repo, with the `fraud-agent` scaffold (tools, adapters, eval harness) copied in as an `agent/` package.
 
-**Progress:** Phases 0-4 are built and their acceptance checks pass (`tests/`), uncommitted as of 2026-10-21. The agent runs on a local model through Ollama (`qwen3:8b`): 11/15 strict, 13/15 lenient on the eval, vs 14/15 for the rule baseline. Phase 4 needed one Spark change (idempotent writes in `spark_consumer_postgres.py`; see docs/CURRENT_STATE.md section 10).
+**Progress:** Phases 0-5 are done, uncommitted as of 2026-10-25. Phase 5 results are in [docs/METRICS.md](docs/METRICS.md): about 8 min first-transaction-to-verdict at steady state, 0% failures, and Spark unaffected by a stopped worker. The agent runs on a local model through Ollama (`qwen3:8b`): 11/15 strict, 13/15 lenient on the eval, vs 14/15 for the rule baseline. Phase 4 needed one Spark change (idempotent writes in `spark_consumer_postgres.py`; see docs/CURRENT_STATE.md section 10).
 
 **Status of this document:** Phase 0 is done, and its findings are in [docs/CURRENT_STATE.md](docs/CURRENT_STATE.md). This revision (2026-10-19) applies them: flags are investigated per **incident**, not per transaction (D2); a generator-fix phase comes before the live end-to-end run (Phase 4); and the agent reads transactions only through a view without `is_fraud` (Phase 1).
 

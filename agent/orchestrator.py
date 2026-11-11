@@ -14,6 +14,8 @@ from dotenv import load_dotenv
 
 load_dotenv()  # reads .env; anything already set in your shell still wins
 
+from adapters.shared import gather_evidence, prompt_version  # noqa: E402
+
 PROVIDERS = {
     "anthropic": "adapters.anthropic_adapter",
     "gemini": "adapters.gemini_adapter",
@@ -39,5 +41,11 @@ def current_model() -> tuple[str, str]:
 
 def run_investigation(account_id: str, txn_id: str, merchant: str, amount: float,
                       context: str | None = None, verbose: bool = True) -> dict:
-    _, module = _adapter()
-    return module.run_investigation(account_id, txn_id, merchant, amount, context=context, verbose=verbose)
+    provider, module = _adapter()
+    evidence = None
+    if prompt_version() == "v3" and provider != "baseline":
+        # Prompt v3: run the four checks here, before the model, instead of hoping it asks for them.
+        from tools import TOOL_FUNCTIONS
+        evidence = gather_evidence(account_id, txn_id, merchant, TOOL_FUNCTIONS)
+    return module.run_investigation(account_id, txn_id, merchant, amount, context=context,
+                                    verbose=verbose, evidence=evidence)

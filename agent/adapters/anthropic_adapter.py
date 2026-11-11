@@ -6,7 +6,7 @@ blocks back in the next message.
 import json
 from anthropic import Anthropic
 from tools import TOOL_SCHEMAS, TOOL_FUNCTIONS
-from adapters.shared import SYSTEM_PROMPT, build_task, parse_verdict
+from adapters.shared import build_task, parse_verdict, system_prompt
 
 MODEL = "claude-sonnet-4-6"
 MAX_ITERATIONS = 8
@@ -21,19 +21,20 @@ def _to_anthropic_schema(schema: dict) -> dict:
 
 
 def run_investigation(account_id: str, txn_id: str, merchant: str, amount: float,
-                      context: str | None = None, verbose: bool = True) -> dict:
+                      context: str | None = None, verbose: bool = True,
+                      evidence: list[dict] | None = None) -> dict:
     client = Anthropic()  # reads ANTHROPIC_API_KEY from env
     tools = [_to_anthropic_schema(s) for s in TOOL_SCHEMAS]
 
-    messages = [{"role": "user", "content": build_task(account_id, txn_id, merchant, amount, context)}]
-    trace = []
+    messages = [{"role": "user", "content": build_task(account_id, txn_id, merchant, amount, context, evidence)}]
+    trace = list(evidence or [])  # prefetched checks (prompt v3) come first
     usage = {"turns": 0, "total_input_tokens": 0, "total_output_tokens": 0, "total_tokens": 0}
 
     for i in range(MAX_ITERATIONS):
         response = client.messages.create(
             model=MODEL,
             max_tokens=1024,
-            system=SYSTEM_PROMPT,
+            system=system_prompt(),
             tools=tools,
             messages=messages,
         )

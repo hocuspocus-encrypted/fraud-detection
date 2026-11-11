@@ -67,7 +67,9 @@ def _score(account, pattern, merchant_risk, geo, txn_id, amount):
 
 
 def run_investigation(account_id: str, txn_id: str, merchant: str, amount: float,
-                      context: str | None = None, verbose: bool = True) -> dict:
+                      context: str | None = None, verbose: bool = True,
+                      evidence: list[dict] | None = None) -> dict:
+    # The rules always run all four tools themselves; prefetched evidence is not used.
     trace = []
 
     def call(name, **kwargs):

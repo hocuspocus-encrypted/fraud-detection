@@ -14,7 +14,7 @@ import os
 from google import genai
 from google.genai import types
 from tools import TOOL_SCHEMAS, TOOL_FUNCTIONS
-from adapters.shared import SYSTEM_PROMPT, build_task, parse_verdict
+from adapters.shared import build_task, parse_verdict, system_prompt
 
 MODEL = "gemini-3.8-flash"
 MAX_ITERATIONS = 8
@@ -40,19 +40,20 @@ def _to_gemini_schema(schema: dict) -> dict:
 
 
 def run_investigation(account_id: str, txn_id: str, merchant: str, amount: float,
-                      context: str | None = None, verbose: bool = True) -> dict:
+                      context: str | None = None, verbose: bool = True,
+                      evidence: list[dict] | None = None) -> dict:
     # reads GEMINI_API_KEY from env. Without a timeout a stalled request blocks
     # forever (seen 2026-10-20); APITimeoutError is retried by the worker as transient.
     timeout_ms = int(float(os.getenv("GEMINI_TIMEOUT_SECONDS", "60")) * 1000)
     client = genai.Client(http_options=types.HttpOptions(timeout=timeout_ms))
     tools = [_to_gemini_schema(s) for s in TOOL_SCHEMAS]
 
-    task = build_task(account_id, txn_id, merchant, amount, context)
+    task = build_task(account_id, txn_id, merchant, amount, context, evidence)
     # Gemini's Interactions API doesn't take a separate "system" argument
     # the way Anthropic's does -- prepend it to the input instead.
-    full_input = f"{SYSTEM_PROMPT}\n\n{task}"
+    full_input = f"{system_prompt()}\n\n{task}"
 
-    trace = []
+    trace = list(evidence or [])  # prefetched checks (prompt v3) come first
     usage = {"turns": 0, **{f: 0 for f in USAGE_FIELDS}}
     interaction = client.interactions.create(model=MODEL, input=full_input, tools=tools)
     _add_usage(usage, interaction)

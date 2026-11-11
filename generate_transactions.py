@@ -199,8 +199,13 @@ class TransactionGenerator:
     """Call step() once per producer tick; it returns the (record, label) pairs due now.
     label is None for ordinary transactions, else a ground_truth_labels row."""
 
-    def __init__(self, seed: int = DEFAULT_SEED, n_users: int = DEFAULT_USERS, clock=None):
+    def __init__(self, seed: int = DEFAULT_SEED, n_users: int = DEFAULT_USERS, clock=None,
+                 stream_seed: int | None = None):
+        """seed fixes the merchant catalog and customer profiles; stream_seed (default:
+        seed) fixes the transactions. The incident eval uses one customer base with
+        different streams for its dev and test splits."""
         self.seed, self.n_users = seed, n_users
+        self.stream_seed = seed if stream_seed is None else stream_seed
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.catalog = build_catalog(seed)
         self.profiles = build_profiles(seed, self.catalog, n_users)
@@ -209,7 +214,7 @@ class TransactionGenerator:
         self._everyday_w = [m.popularity for m in self._everyday]
         self._high = [m for m in self.catalog if m.risk_level == "high"]
         self._activity = [p.activity for p in self.profiles]
-        self._rng = random.Random(f"stream-{seed}")
+        self._rng = random.Random(f"stream-{self.stream_seed}")
         self._queue: list[_Scheduled] = []
         self._seq = itertools.count()
 

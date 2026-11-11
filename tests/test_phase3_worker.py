@@ -162,6 +162,29 @@ def test_incident_context_reaches_the_agent(db):
     assert "1 transaction" in seen["context"] and "450.00" in seen["context"]
 
 
+@pytest.mark.parametrize("score,expected", [
+    (15, ("legitimate", "approve")),
+    (30, ("legitimate", "approve")),
+    (50, ("suspicious", "hold_for_review")),
+    (71, ("likely_fraud", "block_and_notify_customer")),
+])
+def test_verdict_and_action_follow_the_score(db, score, expected):
+    """The model's own label is kept for audit, but the stored verdict and action come
+    from its risk_score: on the dev split qwen3:4b-instruct labelled 92% of non-fraud
+    'suspicious' while its scores separated the classes well."""
+    make_incidents(db, 1)
+    hedged = dict(GOOD, risk_score=score, verdict="suspicious", recommended_action="hold_for_review")
+    make_worker(Recorder(hedged)).run_until_idle()
+    with db.cursor() as cur:
+        cur.execute("SELECT status, risk_score, verdict, recommended_action, trace FROM investigations")
+        status, risk_score, verdict, action, trace = cur.fetchone()
+    assert (status, float(risk_score), (verdict, action)) == ("done", float(score), expected)
+    assert trace[0]["tool"] == "fake"
+    assert trace[-1] == {"type": "verdict_from_score", "risk_score": score,
+                         "model_verdict": "suspicious", "model_action": "hold_for_review",
+                         "verdict": expected[0], "recommended_action": expected[1]}
+
+
 # ---------- failures ----------
 
 def test_transient_errors_retry_then_dead(db):

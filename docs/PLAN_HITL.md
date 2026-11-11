@@ -82,7 +82,7 @@ The routing in H3 needs real inputs, and the Spark jobs must stay unchanged. So 
 
 New module `routing.py` at the repo root, pure functions only, no database or LLM calls. The worker calls it inside `_finish` and writes the result in the same transaction.
 
-Migration `0011_review.sql`: add to `investigations`
+Migration `0012_review.sql` (H2 took `0011`): add to `investigations`
 
 - `review_status TEXT` with CHECK in (`auto_cleared`, `needs_review`, `held_pending_review`, `reviewed`), NULL until routed
 - `review_reasons TEXT[]`
@@ -115,7 +115,7 @@ All thresholds come from `.env` through a small `RoutingConfig` dataclass, like 
 
 ### Phase H4: Analyst decisions and audit trail (steps 6-7, database side)
 
-Migration `0012_analyst.sql`:
+Migration `0013_analyst.sql`:
 
 - Role `analyst` (password from `.env`, NOLOGIN if unset). It can SELECT `investigations`, `investigation_attempts` and `v_agent_transactions`, and SELECT/INSERT on `analyst_decisions`. It gets no UPDATE or DELETE on `analyst_decisions` (append-only) and no access to `ground_truth_labels` or the base `transactions` table.
 - Table `analyst_decisions`: `id`, `investigation_id` (FK), `analyst` (text, from the app's login name), `decision` (`agree`, `override`, `request_info`), `final_action` (`approve`, `hold`, `block`, `request_otp`), `reason` (required when `decision = override`, enforced by CHECK), `agent_verdict_at_decision`, `decided_at`.

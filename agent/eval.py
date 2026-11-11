@@ -32,6 +32,7 @@ sys.path.insert(0, os.path.dirname(HERE))  # repo root, for `db`
 from db import connect                            # noqa: E402
 from db.migrate import migrate, recreate_database  # noqa: E402
 from seed_db import seed_postgres                 # noqa: E402
+from adapters.shared import grounding_ok, prompt_version, verdict_for_score  # noqa: E402
 
 EVAL_DB = "fraud_agent_eval"
 
@@ -87,6 +88,8 @@ def run_case(case, run_investigation, verbose):
         "error": None,
         "seconds": None,
         "usage": None,
+        "confidence": None,
+        "grounding_ok": None,
     }
 
     start = time.time()
@@ -110,6 +113,8 @@ def run_case(case, run_investigation, verbose):
             record["risk_score"] = v.get("risk_score")
             record["action"] = v.get("recommended_action")
             record["explanation"] = v.get("explanation")
+            record["confidence"] = v.get("confidence")
+            record["grounding_ok"] = grounding_ok(v, result["trace"], prompt_version())
     except Exception as e:  # keep the run going; a crash on one case shouldn't lose the rest
         record["error"] = f"{type(e).__name__}: {str(e)[:300]}"
     record["seconds"] = round(time.time() - start, 2)
@@ -120,6 +125,12 @@ def run_case(case, run_investigation, verbose):
     record["action_consistent"] = (
         None if p not in VERDICTS else record["action"] == ACTION_FOR[p]
     )
+    # The worker stores the band of the risk_score, not the model's label (verdict_from_score).
+    score = record["risk_score"]
+    from_score = verdict_for_score(score) if isinstance(score, (int, float)) and p in VERDICTS else None
+    record["from_score"] = from_score
+    record["correct_strict_from_score"] = from_score == record["expected"]
+    record["correct_lenient_from_score"] = from_score == record["expected"] or from_score in record["acceptable"]
     return record
 
 
@@ -129,7 +140,7 @@ def summarize(results, provider):
     lenient = sum(r["correct_lenient"] for r in results)
 
     print("\n" + "=" * 78)
-    print(f"RESULTS  provider={provider}  cases={n}")
+    print(f"RESULTS  provider={provider}  prompt={prompt_version()}  cases={n}")
     print("=" * 78)
 
     print(f"\n{'case':<8} {'category':<28} {'expected':<13} {'predicted':<13} {'score':>5}  result")
@@ -152,6 +163,16 @@ def summarize(results, provider):
 
     print(f"\nStrict accuracy  (exact match only):          {strict}/{n}  ({100 * strict / n:.0f}%)")
     print(f"Lenient accuracy (exact or acceptable):       {lenient}/{n}  ({100 * lenient / n:.0f}%)")
+    strict_s = sum(r["correct_strict_from_score"] for r in results)
+    lenient_s = sum(r["correct_lenient_from_score"] for r in results)
+    print(f"Label from score (what the worker stores):    strict {strict_s}/{n} ({100 * strict_s / n:.0f}%)  "
+          f"lenient {lenient_s}/{n} ({100 * lenient_s / n:.0f}%)")
+    checked = [r for r in results if r["grounding_ok"] is not None]
+    if checked:
+        grounded = sum(r["grounding_ok"] for r in checked)
+        print(f"Evidence grounded in the trace (v4):          {grounded}/{len(checked)}")
+        print("Confidence given: " + ", ".join(
+            f"{c}={sum(r['confidence'] == c for r in results)}" for c in ("low", "medium", "high", None)))
 
     # Confusion matrix
     cols = VERDICTS + ["other"]
@@ -251,10 +272,12 @@ def main():
 
     os.makedirs(args.out_dir, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    path = os.path.join(args.out_dir, f"{args.provider}_{stamp}.json")
+    path = os.path.join(args.out_dir, f"{args.provider}_{prompt_version()}_{stamp}.json")
+    from orchestrator import current_model
     with open(path, "w", encoding="utf-8") as f:
         json.dump({
-            "meta": {"provider": args.provider, "timestamp": stamp, "n_cases": len(results)},
+            "meta": {"provider": args.provider, "model": current_model()[1], "prompt_version": prompt_version(),
+                     "timestamp": stamp, "n_cases": len(results)},
             "results": results,
         }, f, indent=2)
     print(f"Saved full results to {path}")

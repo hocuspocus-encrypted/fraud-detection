@@ -11,6 +11,8 @@ How cases are built (deterministic, no Kafka or Spark):
   - simulate_flags.find_incidents() applies the Spark windows/thresholds and the
     enqueuer's merging (it matched the live run within ~2%)
   - the first WARMUP_HOURS only build history; incidents start after that
+  - each incident's flagged windows are inserted into anomaly_flags with their
+    final totals, so the worker's compute_incident_signals() fills rule_hits
   - each case is investigated at incident end + 5 min (the enqueuer's settle
     delay) against a database holding only the transactions up to that moment,
     like live, through the real worker (claim, investigate, one retry for
@@ -47,7 +49,7 @@ from adapters.shared import prompt_version, verdict_for_score  # noqa: E402
 from db import connect  # noqa: E402
 from db.migrate import migrate, recreate_database  # noqa: E402
 from seed_reference_data import seed_reference_data  # noqa: E402
-from simulate_flags import SIM_START, find_incidents, generate_stream  # noqa: E402
+from simulate_flags import SIM_START, WINDOW_SECONDS, find_incidents, flagged_windows, generate_stream  # noqa: E402
 
 EVAL_DB = "fraud_agent_incident_eval"
 SPLITS = {"dev": {"stream_seed": 1001, "hours": 1.5}, "test": {"stream_seed": 2002, "hours": 2.5}}
@@ -72,6 +74,7 @@ def build_split(split: str) -> tuple[list[dict], list[tuple]]:
     _, events = generate_stream(seed=gt.DEFAULT_SEED, n_users=gt.DEFAULT_USERS, hours=total_hours,
                                 stream_seed=cfg["stream_seed"])
     stream_end = SIM_START + timedelta(hours=total_hours)
+    windows = flagged_windows(events)
     by_user = defaultdict(list)
     for record, label in events:
         by_user[record["user_id"]].append((datetime.fromisoformat(record["timestamp"]), record, label))
@@ -88,6 +91,12 @@ def build_split(split: str) -> tuple[list[dict], list[tuple]]:
                       key=lambda r: (r["amount"], datetime.fromisoformat(r["timestamp"]), r["transaction_id"]))
         expected, acceptable = expected_verdicts(kinds)
         fraud = any(r["is_fraud"] for _, r, _ in inside)
+        # The flagged windows the incident was merged from, with their final totals, so
+        # compute_incident_signals() sees the same anomaly_flags rows as live.
+        flags = [{"window_start": datetime.fromtimestamp(ws, timezone.utc).isoformat(),
+                  "window_end": datetime.fromtimestamp(ws + WINDOW_SECONDS, timezone.utc).isoformat(),
+                  "txn_count": count, "total_amount": total}
+                 for ws, count, total in windows[user] if s <= ws and ws + WINDOW_SECONDS <= e]
         cases.append({
             "case_id": f"{split}-{len(cases):03d}",
             "user_id": user,
@@ -96,6 +105,7 @@ def build_split(split: str) -> tuple[list[dict], list[tuple]]:
             "txn_ids": [r["transaction_id"] for _, r, _ in inside],
             "txn_timestamps": [r["timestamp"] for _, r, _ in inside],
             "primary_txn_id": primary["transaction_id"],
+            "flags": flags,
             "kinds": sorted(kinds),
             "category": "fraud" if fraud else ("legit_oddity" if kinds else "ordinary"),
             "fraud": fraud,
@@ -148,10 +158,18 @@ def run_split(split: str, investigate=None, provider: str | None = None, model: 
             if batch:
                 _insert_transactions(conn, batch)
             with conn, conn.cursor() as cur:
+                flag_ids = []
+                for f in case["flags"]:
+                    cur.execute(
+                        """INSERT INTO anomaly_flags (user_id, window_start, window_end, txn_count, total_amount)
+                           VALUES (%s, %s, %s, %s, %s) RETURNING id""",
+                        (case["user_id"], f["window_start"], f["window_end"], f["txn_count"], f["total_amount"]),
+                    )
+                    flag_ids.append(cur.fetchone()[0])
                 cur.execute(
                     """INSERT INTO investigations (user_id, incident_start, incident_end, flag_ids, txn_ids, primary_txn_id)
-                       VALUES (%s, %s, %s, '{}', %s, %s) RETURNING id""",
-                    (case["user_id"], case["incident_start"], case["incident_end"], case["txn_ids"],
+                       VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
+                    (case["user_id"], case["incident_start"], case["incident_end"], flag_ids, case["txn_ids"],
                      case["primary_txn_id"]),
                 )
                 iid = cur.fetchone()[0]
@@ -168,14 +186,16 @@ def run_split(split: str, investigate=None, provider: str | None = None, model: 
 
             with conn, conn.cursor() as cur:
                 cur.execute("""SELECT status, verdict, risk_score, recommended_action, error, prompt_version,
-                                      provider, model, trace, usage, attempts
+                                      provider, model, trace, usage, attempts, confidence, grounding_ok, rule_hits
                                FROM investigations WHERE id = %s""", (iid,))
-                (status, verdict, risk_score, action, error, pv, prov, mdl, trace, usage, attempts) = cur.fetchone()
+                (status, verdict, risk_score, action, error, pv, prov, mdl, trace, usage, attempts,
+                 confidence, grounding, rule_hits) = cur.fetchone()
             steps = trace or []
             results.append({
                 "case_id": case["case_id"], "status": status, "verdict": verdict,
                 "risk_score": None if risk_score is None else float(risk_score), "action": action,
                 "error": error, "prompt_version": pv, "provider": prov, "model": mdl, "attempts": attempts,
+                "confidence": confidence, "grounding_ok": grounding, "rule_hits": rule_hits,
                 "seconds": seconds,
                 "tool_calls": sum(1 for s in steps if s.get("type") == "tool_call" and not s.get("prefetched")),
                 "prefetched": sum(1 for s in steps if s.get("prefetched")),
@@ -227,6 +247,9 @@ def score(runs: list[list[dict]], cases: list[dict]) -> dict:
         "avg_seconds": sum(r.get("seconds", 0) for _, r in pairs) / len(pairs) if pairs else None,
         "avg_model_tool_calls": sum(r.get("tool_calls", 0) for _, r in pairs) / len(pairs) if pairs else None,
         "all_four_checks": rate(pairs, lambda p: len(p[1].get("tools_seen", [])) == 4),
+        "grounded": rate([p for p in pairs if p[1].get("grounding_ok") is not None],
+                         lambda p: p[1]["grounding_ok"]),
+        "confidence_counts": dict(Counter(r.get("confidence") for _, r in pairs if r["status"] == "done")),
         "verdict_counts": dict(Counter(f"{c.get('category', '?')}->{verdict(r)}" for c, r in pairs)),
     }
 

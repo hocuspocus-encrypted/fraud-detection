@@ -47,7 +47,7 @@ from psycopg2.extras import Json
 from db import ROOT, connect
 
 sys.path.insert(0, str(ROOT / "agent"))
-from adapters.shared import ACTION_FOR, prompt_version, verdict_for_score  # noqa: E402
+from adapters.shared import ACTION_FOR, CONFIDENCE, grounding_ok, prompt_version, verdict_for_score  # noqa: E402
 
 VERDICTS = {"legitimate", "suspicious", "likely_fraud"}
 ACTIONS = {"approve", "hold_for_review", "block_and_notify_customer"}
@@ -126,7 +126,9 @@ def is_transient(exc: BaseException) -> bool:
 
 def valid_verdict(v, prompt_version: str = "v2") -> bool:
     """Well-formed verdict. Under prompt v3 the label must also match the band of its own
-    risk_score and the action must match the label; a contradiction counts as unparseable."""
+    risk_score and the action must match the label; a contradiction counts as unparseable.
+    v4's confidence and evidence objects are never a reason to reject: a missing or unknown
+    confidence is read as low (normalize_verdict), and evidence is checked by grounding_ok."""
     if not isinstance(v, dict):
         return False
     score = v.get("risk_score")
@@ -139,6 +141,12 @@ def valid_verdict(v, prompt_version: str = "v2") -> bool:
     if ok and prompt_version == "v3":
         ok = verdict == verdict_for_score(score) and v["recommended_action"] == ACTION_FOR[verdict]
     return ok
+
+
+def normalize_verdict(v: dict) -> dict:
+    """confidence as one of low/medium/high; missing or anything else is low."""
+    confidence = str(v.get("confidence") or "").strip().lower()
+    return dict(v, confidence=confidence if confidence in CONFIDENCE else "low")
 
 
 def verdict_from_score(v: dict) -> tuple[dict, dict]:
@@ -332,9 +340,10 @@ class Worker:
 
             trace = result.get("trace")
             if valid_verdict(verdict, self.prompt_version):
-                verdict, entry = verdict_from_score(verdict)
+                grounded = grounding_ok(verdict, trace, self.prompt_version)  # before the verdict_from_score entry
+                verdict, entry = verdict_from_score(normalize_verdict(verdict))
                 self._finish(row, "done", "done", verdict=verdict, trace=(trace or []) + [entry], usage=usage,
-                             baseline=baseline)
+                             baseline=baseline, grounded=grounded)
             elif verdict.get("error"):
                 self._finish(row, "failed", "failed", error=str(verdict["error"]), trace=trace, usage=usage,
                              baseline=baseline)
@@ -357,7 +366,7 @@ class Worker:
 
     def _finish(self, row: dict, status: str, outcome: str, verdict: dict | None = None,
                 trace=None, error: str | None = None, usage: dict | None = None,
-                baseline: dict | None = None) -> None:
+                baseline: dict | None = None, grounded: bool | None = None) -> None:
         v = verdict or {}
         b = baseline or {}
         conn = connect("worker", self.dbname)
@@ -368,7 +377,8 @@ class Worker:
                        SET status = %s, finished_at = now(), provider = %s, model = %s, prompt_version = %s,
                            risk_score = %s, verdict = %s, recommended_action = %s, explanation = %s,
                            evidence = %s, trace = %s, error = %s, usage = %s,
-                           baseline_score = %s, baseline_verdict = %s, baseline_action = %s
+                           baseline_score = %s, baseline_verdict = %s, baseline_action = %s,
+                           confidence = %s, grounding_ok = %s
                        WHERE id = %s AND status = 'running' AND attempts = %s""",
                     (status, self.provider, self.model, self.prompt_version,
                      v.get("risk_score"), str(v["verdict"]).strip().lower() if v else None,
@@ -377,6 +387,7 @@ class Worker:
                      Json(trace) if trace is not None else None, error,
                      Json(usage) if usage else None,
                      b.get("risk_score"), b.get("verdict"), b.get("recommended_action"),
+                     v.get("confidence"), grounded,
                      row["id"], row["attempts"]),
                 )
                 if cur.rowcount == 0:

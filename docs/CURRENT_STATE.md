@@ -234,4 +234,15 @@ Migration `0010_risk_signals` adds `rule_hits`, `signals` and `baseline_score` /
 - **The baseline is a rule scorer, not an ML model.** `agent/adapters/baseline_adapter.py` is a dozen hand-written rules over the same four read-only tools. The worker runs it before the agent on every incident (milliseconds, no LLM) and stores its result, including on failed rows. H3 compares it with the agent.
 - **`rule_hits` reach the agent only under prompt `v4`**, which is in progress and not the default. `v2`, the measured configuration, sees the same context as before.
 - Incidents finished before 0010 have no signals or baseline; H3's `route_existing.py` backfills them.
-- The incident eval inserts its incidents without anomaly flags, so `rule_hits` is empty there. To measure `v4` in H2, the eval has to insert the simulated flag windows first. Its history starts after a 2-hour warm-up, so `new_merchant_for_account` is nearly always true in the eval.
+- The incident eval's history starts after a 2-hour warm-up, so `new_merchant_for_account` is nearly always true in the eval. (Since H2 the eval also inserts each incident's flag windows, so `rule_hits` is filled there; see section 12.)
+
+## 12. Verdict contract v4 (PLAN_HITL H2, 2026-11-11)
+
+Migration `0011_verdict_v4` adds `confidence` and `grounding_ok` to `investigations`.
+
+- **Prompt `v4`** is `v2` plus three things: the rules that fired in the context (from H1), a `confidence` field (`low`/`medium`/`high`), and `evidence_cited` items as `{"claim", "tool"}`. `v2` is still the default until the two are measured.
+- **`confidence`** is stored as given, or `low` when the model gave none or an unknown value. That includes every `v2` row, since `v2` never asks for it, so under `v2` H3's `low_confidence` trigger would fire on every case.
+- **`grounding_ok`** (`shared.grounding_ok`): under `v4`, true when `evidence_cited` is a non-empty list and every item names a tool that was called in the trace without an error. A claim with no tool, a tool that was never called, or a call that returned an error makes it false. It is NULL for older prompts, whose evidence names no tools. It never fails an investigation.
+- Old rows keep their plain-string evidence; `shared.evidence_items()` reads both forms as `{"claim", "tool"}` with `tool` null for strings.
+- **The incident eval now inserts each incident's flagged windows** into `anomaly_flags` (final window totals from `simulate_flags.flagged_windows`) and sets `flag_ids`, so `compute_incident_signals()` fills `rule_hits` as it does live. `v2` doesn't see them, so its results are unaffected.
+- `agent/eval.py` now records the prompt version and model in its results file (named `<provider>_<prompt>_<stamp>.json`), and also reports accuracy with the label taken from the score, as the worker stores it. The 15 seeded cases have no incident context, so on that eval `v4` differs from `v2` only in the output contract.

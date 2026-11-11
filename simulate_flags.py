@@ -54,8 +54,9 @@ def generate_stream(seed: int = gt.DEFAULT_SEED, n_users: int = gt.DEFAULT_USERS
     return gen, events
 
 
-def find_incidents(events) -> list[tuple]:
-    """(user_id, start_epoch, end_epoch) per incident, as Spark + enqueue_incidents() would form them."""
+def flagged_windows(events) -> dict:
+    """{user_id: [(window_start_epoch, txn_count, total_amount), ...]} for every window the
+    Spark rules flag, sorted by start. The values are the window's final totals."""
     windows = defaultdict(lambda: [0, 0.0])
     for record, _ in events:
         t = datetime.fromisoformat(record["timestamp"]).timestamp()
@@ -68,11 +69,17 @@ def find_incidents(events) -> list[tuple]:
     flagged = defaultdict(list)
     for (user, s), (count, total) in windows.items():
         if count > FREQUENCY_THRESHOLD or total > SPEND_THRESHOLD:
-            flagged[user].append(s)
-
-    incidents = []
-    for user, starts in flagged.items():
+            flagged[user].append((s, count, round(total, 2)))
+    for starts in flagged.values():
         starts.sort()
+    return flagged
+
+
+def find_incidents(events) -> list[tuple]:
+    """(user_id, start_epoch, end_epoch) per incident, as Spark + enqueue_incidents() would form them."""
+    incidents = []
+    for user, windows in flagged_windows(events).items():
+        starts = [s for s, _, _ in windows]
         cur_start, cur_end = starts[0], starts[0] + WINDOW_SECONDS
         for s in starts[1:]:
             if s > cur_end:

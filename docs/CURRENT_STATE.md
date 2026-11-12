@@ -271,3 +271,15 @@ Migration `0013_analyst` adds the `analyst` role, `analyst_decisions`, `record_d
 - **`v_case_latest_decision`:** one row per decided case, its latest decision (by `decided_at`, then `id`) and `decision_count`.
 - `agent_ro` and `worker` can neither read decisions nor call `record_decision`.
 - On `fraud_db` (2026-11-12): applied; 0 decisions; 69 `held_pending_review` rows, 2 unrouted (pending/running).
+
+## 15. Review UI (PLAN_HITL H5, 2026-11-12)
+
+The dashboard is now a multipage app. `streamlit_dashboard.py` is only the entry point (`st.navigation`), so `run_dashboard.bat` is unchanged. Walkthrough and results: `docs/REVIEW_UI_CHECKLIST.md`.
+
+- **Pipeline** (`pages/pipeline.py`) is the old dashboard, moved with its queries unchanged. It still connects as `fraud_user` through its hardcoded URL, and it is the only page that auto-refreshes, so a half-filled decision form is never reset.
+- **Review queue, Case detail, Oversight** (`pages/review_queue.py`, `pages/case_detail.py`, `pages/oversight.py`) connect as `analyst` through `review_data.py` (`db.connect_kwargs("analyst")`, a fresh connection per page run). They read only what `analyst` can: `investigations`, `investigation_attempts`, `v_agent_transactions`, `analyst_decisions`, `v_case_latest_decision`. `PGDATABASE` moves them to another database; the Pipeline page stays on `fraud_db`.
+- **Queue:** `needs_review`, `held_pending_review` and auto-cleared QA samples, by `review_priority` (then oldest first). Amount is the primary transaction's. A case with a `request_info` decision stays and shows it under "Last decision".
+- **Decisions:** `review_data.validate_decision()` runs before anything is sent (override needs a reason; agree/override need a final action; name required; the table's length caps), and shows each problem inline. Then `submit_decision()` calls `record_decision()`; a database refusal (case not open) is shown as "Not recorded". No final action is preselected, so the analyst has to choose one. The analyst's name is a text field defaulting to the Windows user name; there is no login, so it is self-reported.
+- **Database text is data:** explanations, claims, merchant names and errors are shown with `st.text` or in tables, never as Markdown, and free text is cut at 4,000 characters for display.
+- **Oversight:** counts by `review_status`, queue depth, median time from routing (`finished_at`) to the first agree/override, and the override rate over each decided case's latest agree/override. The H6 metrics are not there yet.
+- Case 963 in `fraud_h5_walkthrough` (a copy of `fraud_db`) has the walkthrough's override. `fraud_db` still has 0 decisions.

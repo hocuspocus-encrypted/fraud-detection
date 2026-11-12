@@ -164,7 +164,7 @@ def db(h2_db):
     conn = connect("admin", h2_db)
     conn.autocommit = True
     with conn.cursor() as cur:
-        cur.execute("TRUNCATE investigation_attempts, investigations, transactions, anomaly_flags RESTART IDENTITY")
+        cur.execute("TRUNCATE analyst_decisions, investigation_attempts, investigations, transactions, anomaly_flags RESTART IDENTITY")
         cur.execute("""INSERT INTO transactions (transaction_id, event_timestamp, user_id, amount, currency,
                                                  merchant, location_city, location_country, is_fraud)
                        VALUES ('t1', %s, 'u1', 400, 'USD', 'Gadget Hub', 'Paris', 'FR', false)""", (T0,))

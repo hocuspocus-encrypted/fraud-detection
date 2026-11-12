@@ -73,7 +73,7 @@ def db(worker_db):
     conn = connect("admin", worker_db)
     conn.autocommit = True
     with conn.cursor() as cur:
-        cur.execute("TRUNCATE investigation_attempts, investigations, transactions RESTART IDENTITY")
+        cur.execute("TRUNCATE analyst_decisions, investigation_attempts, investigations, transactions RESTART IDENTITY")
     yield conn
     conn.close()
 

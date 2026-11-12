@@ -257,7 +257,7 @@ def db(h3_db, monkeypatch):
     conn = connect("admin", h3_db)
     conn.autocommit = True
     with conn.cursor() as cur:
-        cur.execute("TRUNCATE investigation_attempts, investigations, transactions, anomaly_flags, "
+        cur.execute("TRUNCATE analyst_decisions, investigation_attempts, investigations, transactions, anomaly_flags, "
                     "account_profiles, merchant_risk RESTART IDENTITY")
     yield conn
     conn.close()

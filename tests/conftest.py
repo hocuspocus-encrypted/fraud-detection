@@ -49,7 +49,7 @@ def db(migrate_runs):
     conn.autocommit = True
     with conn.cursor() as cur:
         cur.execute(
-            "TRUNCATE investigation_attempts, investigations, anomaly_flags, transactions, "
+            "TRUNCATE analyst_decisions, investigation_attempts, investigations, anomaly_flags, transactions, "
             "account_profiles, merchant_risk, ground_truth_labels RESTART IDENTITY"
         )
     yield conn

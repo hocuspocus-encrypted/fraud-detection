@@ -11,11 +11,13 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT / ".env")
 
-# Roles created by db/migrations/0002_roles.sql -> the .env variable holding each password.
+# Roles created by db/migrations/0002_roles.sql (analyst: 0013_analyst.sql) -> the .env
+# variable holding each password.
 ROLE_PASSWORD_VARS = {
     "pipeline_writer": "PIPELINE_WRITER_PASSWORD",
     "worker": "WORKER_PASSWORD",
     "agent_ro": "AGENT_RO_PASSWORD",
+    "analyst": "ANALYST_PASSWORD",
 }
 
 

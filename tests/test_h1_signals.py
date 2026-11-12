@@ -39,7 +39,7 @@ def db(h1_db):
     conn = connect("admin", h1_db)
     conn.autocommit = True
     with conn.cursor() as cur:
-        cur.execute("TRUNCATE investigation_attempts, investigations, transactions, anomaly_flags, "
+        cur.execute("TRUNCATE analyst_decisions, investigation_attempts, investigations, transactions, anomaly_flags, "
                     "account_profiles, merchant_risk RESTART IDENTITY")
     yield conn
     conn.close()
@@ -214,7 +214,7 @@ def test_rule_hits_reach_the_agent_under_v4_only(db, monkeypatch):
     assert "velocity_gt_2_in_2min" in seen[0]
 
     with db.cursor() as cur:
-        cur.execute("TRUNCATE investigation_attempts, investigations, transactions, anomaly_flags RESTART IDENTITY")
+        cur.execute("TRUNCATE analyst_decisions, investigation_attempts, investigations, transactions, anomaly_flags RESTART IDENTITY")
         velocity_burst(cur)
     seen.clear()
     monkeypatch.setenv("AGENT_PROMPT_VERSION", "v2")
